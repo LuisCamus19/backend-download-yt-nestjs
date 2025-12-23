@@ -33,24 +33,10 @@ export class DownloadsService {
   ): Promise<AudioResponseDto> {
     this.logger.log(`--- NUEVA SOLICITUD --- URL: ${videoUrl}`);
 
-    let videoTitle = 'archivo_descargado';
-    try {
-      videoTitle = await this.getVideoTitle(videoUrl);
-    } catch (e) {
-      this.logger.warn('⚠️ No se pudo obtener título, usando genérico.');
-    }
-
-    videoTitle = videoTitle.replace(/[\\/:*?"<>|]/g, '_');
-    this.logger.log(`Título: ${videoTitle}`);
-
     const processId = uuidv4();
-    const uniqueFileName = `temp_${processId}.${format}`;
-    const tempFilePath = path.join(os.tmpdir(), uniqueFileName);
-
-    const args: string[] = [];
-
     const cookiesPathRender = '/etc/secrets/cookies.txt';
     const cookiesPathLocal = './cookies.txt';
+
     let cookiesToUse = '';
     let tempCookiesPath = '';
 
@@ -62,7 +48,7 @@ export class DownloadsService {
       try {
         fs.copyFileSync(cookiesPathRender, tempCookiesPath);
         cookiesToUse = tempCookiesPath;
-        this.logger.log(`🍪 Cookies copiadas exitosamente a: ${cookiesToUse}`);
+        this.logger.log(`🍪 Cookies copiadas y listas: ${cookiesToUse}`);
       } catch (err) {
         this.logger.error(`Error crítico copiando cookies: ${err}`);
       }
@@ -70,6 +56,21 @@ export class DownloadsService {
       this.logger.log('🍪 Usando cookies locales');
       cookiesToUse = cookiesPathLocal;
     }
+
+    let videoTitle = 'archivo_descargado';
+    try {
+      videoTitle = await this.getVideoTitle(videoUrl, cookiesToUse);
+    } catch (e) {
+      this.logger.warn('⚠️ No se pudo obtener título, usando genérico.');
+    }
+
+    videoTitle = videoTitle.replace(/[\\/:*?"<>|]/g, '_');
+    this.logger.log(`Título obtenido: ${videoTitle}`);
+
+    const uniqueFileName = `temp_${processId}.${format}`;
+    const tempFilePath = path.join(os.tmpdir(), uniqueFileName);
+
+    const args: string[] = [];
 
     if (cookiesToUse) {
       args.push('--cookies', cookiesToUse);
@@ -108,7 +109,7 @@ export class DownloadsService {
 
     fileStream.on('close', () => {
       fs.unlink(tempFilePath, (err) => {
-        if (err) this.logger.error(`Error borrando video temp: ${err}`);
+        if (err) this.logger.error(`Error borrando temp media: ${err}`);
         else this.logger.log(`🗑️ Archivo temporal borrado: ${uniqueFileName}`);
       });
 
@@ -125,9 +126,16 @@ export class DownloadsService {
     );
   }
 
-  private getVideoTitle(url: string): Promise<string> {
+  private getVideoTitle(url: string, cookiesPath?: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const args = ['--get-title', '--no-warnings', '--no-playlist', url];
+      const args = ['--get-title', '--no-warnings', '--no-playlist'];
+
+      if (cookiesPath) {
+        args.push('--cookies', cookiesPath);
+      }
+
+      args.push(url);
+
       const child = spawn(this.ytDlpCommand, args);
 
       let output = '';

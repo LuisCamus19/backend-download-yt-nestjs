@@ -17,7 +17,6 @@ export class DownloadsService {
   private readonly logger = new Logger(DownloadsService.name);
   private ytDlpCommand = 'yt-dlp';
 
-
   async downloadAudio(request: DownloadRequestDto): Promise<AudioResponseDto> {
     return this.ejecutarDescarga(request.url, request.quality, 'mp3');
   }
@@ -49,6 +48,16 @@ export class DownloadsService {
 
     const args: string[] = [];
 
+    const cookiesPathRender = '/etc/secrets/cookies.txt';
+    const cookiesPathLocal = './cookies.txt';
+
+    if (fs.existsSync(cookiesPathRender)) {
+      this.logger.log('🍪 Usando cookies seguras de Render');
+      args.push('--cookies', cookiesPathRender);
+    } else if (fs.existsSync(cookiesPathLocal)) {
+      this.logger.log('🍪 Usando cookies locales');
+      args.push('--cookies', cookiesPathLocal);
+    }
 
     args.push('--no-playlist');
     args.push('-o', tempFilePath);

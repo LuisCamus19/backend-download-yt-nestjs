@@ -36,8 +36,19 @@ export class DownloadsService {
   ): Promise<AudioResponseDto> {
     this.logger.log(`--- NUEVA SOLICITUD --- URL: ${videoUrl}`);
 
-    const processId = uuidv4();
+    let videoTitle = 'archivo_descargado';
+    try {
+      videoTitle = await this.getVideoTitle(videoUrl);
+    } catch (e) {
+      this.logger.warn(
+        '⚠️ No se pudo obtener título (normal en Render), usando genérico.',
+      );
+    }
 
+    videoTitle = videoTitle.replace(/[\\/:*?"<>|]/g, '_');
+    this.logger.log(`Título a usar: ${videoTitle}`);
+
+    const processId = uuidv4();
     const cookiesPathRender = '/etc/secrets/cookies.txt';
     const cookiesPathLocal = './cookies.txt';
 
@@ -46,36 +57,25 @@ export class DownloadsService {
 
     if (fs.existsSync(cookiesPathRender)) {
       this.logger.log('🍪 Detectadas cookies en Secrets (Render)');
-
       tempCookiesPath = path.join(os.tmpdir(), `cookies_${processId}.txt`);
-
       try {
         fs.copyFileSync(cookiesPathRender, tempCookiesPath);
         cookiesToUse = tempCookiesPath;
-        this.logger.log(`🍪 Cookies copiadas y listas: ${cookiesToUse}`);
+        this.logger.log(`🍪 Cookies copiadas: ${cookiesToUse}`);
       } catch (err) {
-        this.logger.error(`Error crítico copiando cookies: ${err}`);
+        this.logger.error(`Error copiando cookies: ${err}`);
       }
     } else if (fs.existsSync(cookiesPathLocal)) {
       this.logger.log('🍪 Usando cookies locales');
       cookiesToUse = cookiesPathLocal;
     }
 
-    let videoTitle = 'archivo_descargado';
-    try {
-      videoTitle = await this.getVideoTitle(videoUrl, cookiesToUse);
-    } catch (e) {
-      this.logger.warn('⚠️ No se pudo obtener título, usando genérico.');
-    }
-
-    videoTitle = videoTitle.replace(/[\\/:*?"<>|]/g, '_');
-    this.logger.log(`Título obtenido: ${videoTitle}`);
-
     const uniqueFileName = `temp_${processId}.${format}`;
     const tempFilePath = path.join(os.tmpdir(), uniqueFileName);
 
     const args: string[] = [];
 
+    // Cookies
     if (cookiesToUse) {
       args.push('--cookies', cookiesToUse);
     }
@@ -103,6 +103,7 @@ export class DownloadsService {
 
     args.push(videoUrl);
 
+    // 4. EJECUCIÓN
     await this.runSpawn(this.ytDlpCommand, args);
 
     if (!fs.existsSync(tempFilePath)) {
@@ -111,17 +112,17 @@ export class DownloadsService {
 
     this.logger.log('✅ Descarga lista. Preparando stream...');
 
+    // 5. STREAM Y LIMPIEZA
     const fileStream = fs.createReadStream(tempFilePath);
 
     fileStream.on('close', () => {
       fs.unlink(tempFilePath, (err) => {
-        if (err) this.logger.error(`Error borrando video temp: ${err}`);
-        else this.logger.log(`🗑️ Archivo temporal borrado: ${uniqueFileName}`);
+        if (err) this.logger.error(`Error borrando video: ${err}`);
+        else this.logger.log(`🗑️ Video borrado: ${uniqueFileName}`);
       });
 
       if (tempCookiesPath && fs.existsSync(tempCookiesPath)) {
         fs.unlink(tempCookiesPath, (err) => {
-          if (!err) this.logger.log(`🗑️ Cookies temporales borradas`);
         });
       }
     });
@@ -132,18 +133,16 @@ export class DownloadsService {
     );
   }
 
-  private getVideoTitle(url: string, cookiesPath?: string): Promise<string> {
+  private getVideoTitle(url: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const args = ['--get-title', '--no-warnings', '--no-playlist'];
-
-      if (cookiesPath) {
-        args.push('--cookies', cookiesPath);
-      }
-
-      args.push('--user-agent', this.userAgent);
-
-      args.push(url);
-
+      const args = [
+        '--get-title',
+        '--no-warnings',
+        '--no-playlist',
+        '--user-agent',
+        this.userAgent,
+        url,
+      ];
       const child = spawn(this.ytDlpCommand, args);
 
       let output = '';
@@ -160,22 +159,21 @@ export class DownloadsService {
 
   private runSpawn(command: string, args: string[]): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.logger.debug(`Ejecutando: ${command} ${args.join(' ')}`);
+      this.logger.debug(`Ejecutando descarga...`);
 
-      const child = spawn(command, args);
-
-      child.stdout.on('data', (data) => console.log(`yt-dlp: ${data}`));
+        const child = spawn(command, args);
+        
       child.stderr.on('data', (data) => console.error(`yt-dlp error: ${data}`));
 
       child.on('close', (code) => {
         if (code === 0) resolve();
-        else reject(new Error(`Proceso falló con código ${code}`));
+        else reject(new Error(`Exit Code: ${code}`));
       });
 
       setTimeout(
         () => {
           child.kill();
-          reject(new Error('Tiempo de espera agotado (Timeout)'));
+          reject(new Error('Timeout'));
         },
         15 * 60 * 1000,
       );

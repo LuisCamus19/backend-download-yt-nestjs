@@ -43,20 +43,36 @@ export class DownloadsService {
     videoTitle = videoTitle.replace(/[\\/:*?"<>|]/g, '_');
     this.logger.log(`Título: ${videoTitle}`);
 
-    const uniqueFileName = `temp_${uuidv4()}.${format}`;
+    const processId = uuidv4();
+    const uniqueFileName = `temp_${processId}.${format}`;
     const tempFilePath = path.join(os.tmpdir(), uniqueFileName);
 
     const args: string[] = [];
 
     const cookiesPathRender = '/etc/secrets/cookies.txt';
     const cookiesPathLocal = './cookies.txt';
+    let cookiesToUse = '';
+    let tempCookiesPath = '';
 
     if (fs.existsSync(cookiesPathRender)) {
-      this.logger.log('🍪 Usando cookies seguras de Render');
-      args.push('--cookies', cookiesPathRender);
+      this.logger.log('🍪 Detectadas cookies en Secrets (Render)');
+
+      tempCookiesPath = path.join(os.tmpdir(), `cookies_${processId}.txt`);
+
+      try {
+        fs.copyFileSync(cookiesPathRender, tempCookiesPath);
+        cookiesToUse = tempCookiesPath;
+        this.logger.log(`🍪 Cookies copiadas exitosamente a: ${cookiesToUse}`);
+      } catch (err) {
+        this.logger.error(`Error crítico copiando cookies: ${err}`);
+      }
     } else if (fs.existsSync(cookiesPathLocal)) {
       this.logger.log('🍪 Usando cookies locales');
-      args.push('--cookies', cookiesPathLocal);
+      cookiesToUse = cookiesPathLocal;
+    }
+
+    if (cookiesToUse) {
+      args.push('--cookies', cookiesToUse);
     }
 
     args.push('--no-playlist');
@@ -92,9 +108,15 @@ export class DownloadsService {
 
     fileStream.on('close', () => {
       fs.unlink(tempFilePath, (err) => {
-        if (err) this.logger.error(`Error borrando temp: ${err}`);
+        if (err) this.logger.error(`Error borrando video temp: ${err}`);
         else this.logger.log(`🗑️ Archivo temporal borrado: ${uniqueFileName}`);
       });
+
+      if (tempCookiesPath && fs.existsSync(tempCookiesPath)) {
+        fs.unlink(tempCookiesPath, (err) => {
+          if (!err) this.logger.log(`🗑️ Cookies temporales borradas`);
+        });
+      }
     });
 
     return new AudioResponseDto(

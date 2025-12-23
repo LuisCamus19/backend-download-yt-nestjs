@@ -17,6 +17,9 @@ export class DownloadsService {
   private readonly logger = new Logger(DownloadsService.name);
   private ytDlpCommand = 'yt-dlp';
 
+  private readonly userAgent =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
   async downloadAudio(request: DownloadRequestDto): Promise<AudioResponseDto> {
     return this.ejecutarDescarga(request.url, request.quality, 'mp3');
   }
@@ -34,6 +37,7 @@ export class DownloadsService {
     this.logger.log(`--- NUEVA SOLICITUD --- URL: ${videoUrl}`);
 
     const processId = uuidv4();
+
     const cookiesPathRender = '/etc/secrets/cookies.txt';
     const cookiesPathLocal = './cookies.txt';
 
@@ -76,6 +80,8 @@ export class DownloadsService {
       args.push('--cookies', cookiesToUse);
     }
 
+    args.push('--user-agent', this.userAgent);
+
     args.push('--no-playlist');
     args.push('-o', tempFilePath);
     args.push('--force-overwrites');
@@ -109,7 +115,7 @@ export class DownloadsService {
 
     fileStream.on('close', () => {
       fs.unlink(tempFilePath, (err) => {
-        if (err) this.logger.error(`Error borrando temp media: ${err}`);
+        if (err) this.logger.error(`Error borrando video temp: ${err}`);
         else this.logger.log(`🗑️ Archivo temporal borrado: ${uniqueFileName}`);
       });
 
@@ -133,6 +139,8 @@ export class DownloadsService {
       if (cookiesPath) {
         args.push('--cookies', cookiesPath);
       }
+
+      args.push('--user-agent', this.userAgent);
 
       args.push(url);
 

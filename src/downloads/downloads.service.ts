@@ -15,12 +15,9 @@ import { StreamableFile } from '@nestjs/common';
 @Injectable()
 export class DownloadsService {
   private readonly logger = new Logger(DownloadsService.name);
-  private ytDlpCommand = 'yt-dlp'; // Asegúrate de que yt-dlp esté en tus variables de entorno (PATH)
+  private ytDlpCommand = 'yt-dlp'; // Asegúrate de que yt-dlp esté en el PATH de Windows
 
-  // Configuración para entorno LOCAL
-  // Puedes cambiar 'chrome' por 'edge' o 'firefox' según el navegador que uses
-  private readonly browserForCookies = 'edge';
-
+  // Un User-Agent genérico ayuda a que no te bloqueen inmediatamente
   private readonly userAgent =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -38,43 +35,44 @@ export class DownloadsService {
     qualityParam: string,
     format: string,
   ): Promise<AudioResponseDto> {
-    this.logger.log(`--- NUEVA SOLICITUD LOCAL --- URL: ${videoUrl}`);
+    this.logger.log(`--- NUEVA SOLICITUD --- URL: ${videoUrl}`);
 
+    // 1. OBTENER TÍTULO (Sin cookies, modo simple)
     let videoTitle = 'archivo_descargado';
     try {
       videoTitle = await this.getVideoTitle(videoUrl);
     } catch (e) {
-      this.logger.warn(
-        `⚠️ No se pudo obtener título: ${e.message}. Usando nombre genérico.`,
-      );
+      this.logger.warn('⚠️ No se pudo obtener título, usando genérico.');
     }
 
+    // Limpieza de caracteres prohibidos en Windows
     videoTitle = videoTitle.replace(/[\\/:*?"<>|]/g, '_');
-    this.logger.log(`Título procesado: ${videoTitle}`);
+    this.logger.log(`Título: ${videoTitle}`);
 
     const processId = uuidv4();
     const uniqueFileName = `temp_${processId}.${format}`;
+    // Usamos la carpeta temporal del sistema
     const tempFilePath = path.join(os.tmpdir(), uniqueFileName);
 
     const args: string[] = [];
 
-    args.push('--cookies-from-browser', this.browserForCookies);
-
+    // --- CONFIGURACIÓN BÁSICA ---
     args.push('--user-agent', this.userAgent);
     args.push('--no-playlist');
     args.push('-o', tempFilePath);
     args.push('--force-overwrites');
     args.push('--no-warnings');
 
-
+    // --- CONFIGURACIÓN DE FORMATOS ---
     if (format === 'mp3') {
       const bitrate = qualityParam ? `${qualityParam}K` : '192K';
-      args.push('-x');
+      args.push('-x'); // Extraer audio
       args.push('--audio-format', 'mp3');
       args.push('--audio-quality', bitrate);
       args.push('--add-metadata');
     } else {
       const res = qualityParam || '1080';
+      // Descargar mejor video + mejor audio y unir
       args.push(
         '-f',
         `bestvideo[height<=${res}]+bestaudio/best[height<=${res}]`,
@@ -84,24 +82,24 @@ export class DownloadsService {
 
     args.push(videoUrl);
 
-    // 2. EJECUCIÓN
+    // 2. EJECUCIÓN DEL COMANDO
     await this.runSpawn(this.ytDlpCommand, args);
 
     if (!fs.existsSync(tempFilePath)) {
       throw new InternalServerErrorException(
-        'El archivo no se creó. Revisa si ffmpeg está instalado.',
+        'El archivo no se creó. Verifica que ffmpeg esté instalado.',
       );
     }
 
-    this.logger.log('✅ Descarga local terminada. Iniciando stream...');
+    this.logger.log('✅ Descarga lista. Preparando stream...');
 
+    // 3. STREAM AL CLIENTE
     const fileStream = fs.createReadStream(tempFilePath);
 
+    // Borrar archivo temporal cuando se termine de enviar
     fileStream.on('close', () => {
       fs.unlink(tempFilePath, (err) => {
-        if (err) this.logger.error(`Error borrando archivo temporal: ${err}`);
-        else
-          this.logger.log(`🗑️ Archivo temporal eliminado: ${uniqueFileName}`);
+        if (err) this.logger.error(`Error borrando temporal: ${err}`);
       });
     });
 
@@ -119,8 +117,6 @@ export class DownloadsService {
         '--no-playlist',
         '--user-agent',
         this.userAgent,
-        '--cookies-from-browser',
-        this.browserForCookies,
         url,
       ];
 
@@ -133,20 +129,21 @@ export class DownloadsService {
 
       child.on('close', (code) => {
         if (code === 0) resolve(output.trim());
-        else reject(new Error('Falló yt-dlp --get-title'));
+        else reject(new Error('Error obteniendo título'));
       });
     });
   }
 
   private runSpawn(command: string, args: string[]): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.logger.debug(`Ejecutando comando local yt-dlp...`);
+      this.logger.debug(`Ejecutando yt-dlp (Básico)...`);
 
       const child = spawn(command, args);
 
+      // Monitoreo básico de errores
       child.stderr.on('data', (data) => {
         const msg = data.toString();
-
+        // Solo mostrar errores reales, ignorar barras de progreso
         if (
           !msg.includes('[download]') &&
           !msg.includes('ETA') &&
@@ -158,16 +155,8 @@ export class DownloadsService {
 
       child.on('close', (code) => {
         if (code === 0) resolve();
-        else reject(new Error(`yt-dlp salió con código de error: ${code}`));
+        else reject(new Error(`Exit Code: ${code}`));
       });
-
-      setTimeout(
-        () => {
-          child.kill();
-          reject(new Error('Timeout: La descarga tardó demasiado.'));
-        },
-        30 * 60 * 1000,
-      );
     });
   }
 }

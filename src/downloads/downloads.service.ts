@@ -15,7 +15,11 @@ import { StreamableFile } from '@nestjs/common';
 @Injectable()
 export class DownloadsService {
   private readonly logger = new Logger(DownloadsService.name);
-  private ytDlpCommand = 'yt-dlp';
+  private ytDlpCommand = 'yt-dlp'; // Asegúrate de que yt-dlp esté en tus variables de entorno (PATH)
+
+  // Configuración para entorno LOCAL
+  // Puedes cambiar 'chrome' por 'edge' o 'firefox' según el navegador que uses
+  private readonly browserForCookies = 'edge';
 
   private readonly userAgent =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -34,57 +38,34 @@ export class DownloadsService {
     qualityParam: string,
     format: string,
   ): Promise<AudioResponseDto> {
-    this.logger.log(`--- NUEVA SOLICITUD --- URL: ${videoUrl}`);
+    this.logger.log(`--- NUEVA SOLICITUD LOCAL --- URL: ${videoUrl}`);
 
     let videoTitle = 'archivo_descargado';
     try {
       videoTitle = await this.getVideoTitle(videoUrl);
     } catch (e) {
       this.logger.warn(
-        '⚠️ No se pudo obtener título (normal en Render), usando genérico.',
+        `⚠️ No se pudo obtener título: ${e.message}. Usando nombre genérico.`,
       );
     }
 
     videoTitle = videoTitle.replace(/[\\/:*?"<>|]/g, '_');
-    this.logger.log(`Título a usar: ${videoTitle}`);
+    this.logger.log(`Título procesado: ${videoTitle}`);
 
     const processId = uuidv4();
-    const cookiesPathRender = '/etc/secrets/cookies.txt';
-    const cookiesPathLocal = './cookies.txt';
-
-    let cookiesToUse = '';
-    let tempCookiesPath = '';
-
-    if (fs.existsSync(cookiesPathRender)) {
-      this.logger.log('🍪 Detectadas cookies en Secrets (Render)');
-      tempCookiesPath = path.join(os.tmpdir(), `cookies_${processId}.txt`);
-      try {
-        fs.copyFileSync(cookiesPathRender, tempCookiesPath);
-        cookiesToUse = tempCookiesPath;
-        this.logger.log(`🍪 Cookies copiadas: ${cookiesToUse}`);
-      } catch (err) {
-        this.logger.error(`Error copiando cookies: ${err}`);
-      }
-    } else if (fs.existsSync(cookiesPathLocal)) {
-      this.logger.log('🍪 Usando cookies locales');
-      cookiesToUse = cookiesPathLocal;
-    }
-
     const uniqueFileName = `temp_${processId}.${format}`;
     const tempFilePath = path.join(os.tmpdir(), uniqueFileName);
 
     const args: string[] = [];
 
-    // Cookies
-    if (cookiesToUse) {
-      args.push('--cookies', cookiesToUse);
-    }
+    args.push('--cookies-from-browser', this.browserForCookies);
 
     args.push('--user-agent', this.userAgent);
-
     args.push('--no-playlist');
     args.push('-o', tempFilePath);
     args.push('--force-overwrites');
+    args.push('--no-warnings');
+
 
     if (format === 'mp3') {
       const bitrate = qualityParam ? `${qualityParam}K` : '192K';
@@ -103,28 +84,25 @@ export class DownloadsService {
 
     args.push(videoUrl);
 
-    // 4. EJECUCIÓN
+    // 2. EJECUCIÓN
     await this.runSpawn(this.ytDlpCommand, args);
 
     if (!fs.existsSync(tempFilePath)) {
-      throw new InternalServerErrorException('El archivo no se creó.');
+      throw new InternalServerErrorException(
+        'El archivo no se creó. Revisa si ffmpeg está instalado.',
+      );
     }
 
-    this.logger.log('✅ Descarga lista. Preparando stream...');
+    this.logger.log('✅ Descarga local terminada. Iniciando stream...');
 
-    // 5. STREAM Y LIMPIEZA
     const fileStream = fs.createReadStream(tempFilePath);
 
     fileStream.on('close', () => {
       fs.unlink(tempFilePath, (err) => {
-        if (err) this.logger.error(`Error borrando video: ${err}`);
-        else this.logger.log(`🗑️ Video borrado: ${uniqueFileName}`);
+        if (err) this.logger.error(`Error borrando archivo temporal: ${err}`);
+        else
+          this.logger.log(`🗑️ Archivo temporal eliminado: ${uniqueFileName}`);
       });
-
-      if (tempCookiesPath && fs.existsSync(tempCookiesPath)) {
-        fs.unlink(tempCookiesPath, (err) => {
-        });
-      }
     });
 
     return new AudioResponseDto(
@@ -141,8 +119,11 @@ export class DownloadsService {
         '--no-playlist',
         '--user-agent',
         this.userAgent,
+        '--cookies-from-browser',
+        this.browserForCookies,
         url,
       ];
+
       const child = spawn(this.ytDlpCommand, args);
 
       let output = '';
@@ -152,30 +133,40 @@ export class DownloadsService {
 
       child.on('close', (code) => {
         if (code === 0) resolve(output.trim());
-        else reject(new Error('Error obteniendo título'));
+        else reject(new Error('Falló yt-dlp --get-title'));
       });
     });
   }
 
   private runSpawn(command: string, args: string[]): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.logger.debug(`Ejecutando descarga...`);
+      this.logger.debug(`Ejecutando comando local yt-dlp...`);
 
-        const child = spawn(command, args);
-        
-      child.stderr.on('data', (data) => console.error(`yt-dlp error: ${data}`));
+      const child = spawn(command, args);
+
+      child.stderr.on('data', (data) => {
+        const msg = data.toString();
+
+        if (
+          !msg.includes('[download]') &&
+          !msg.includes('ETA') &&
+          !msg.includes('frame')
+        ) {
+          console.error(`yt-dlp log: ${msg}`);
+        }
+      });
 
       child.on('close', (code) => {
         if (code === 0) resolve();
-        else reject(new Error(`Exit Code: ${code}`));
+        else reject(new Error(`yt-dlp salió con código de error: ${code}`));
       });
 
       setTimeout(
         () => {
           child.kill();
-          reject(new Error('Timeout'));
+          reject(new Error('Timeout: La descarga tardó demasiado.'));
         },
-        15 * 60 * 1000,
+        30 * 60 * 1000,
       );
     });
   }
